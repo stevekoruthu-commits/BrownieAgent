@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# Database Files (these will be recreated)
+chroma_vector_db/
+faiss_index/
+*.db
+*.sqlite
+*.pkl
+chroma/
+
+# Data Files (usually large and personal)
+data/
+*.pdf
+
+# Logs and Cache
+*.log
+.cache/
+.pytest_cache/
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Streamlit
+.streamlit/
+
+# Backup Files
+backup/
