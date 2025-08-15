@@ -1,0 +1,9 @@
+{
+  "ollama_ready": false,
+  "llm_model_ready": false,
+  "embedding_model_ready": false,
+  "chroma_ready": true,
+  "company_docs_ready": true,
+  "last_heartbeat": "2025-08-15T10:53:18.590121",
+  "startup_time": 3.997980833053589
+}
