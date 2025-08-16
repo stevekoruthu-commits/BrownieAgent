@@ -20,6 +20,6 @@ echo    Professional Legal Document Analysis
 echo    Optimized for comprehensive case research
 echo ========================================
 echo.
-streamlit run app_law_firm.py --server.port 8502
+streamlit run app.py --server.port 8502
 
 pause
