@@ -1,9 +1,10 @@
 import os
 import tempfile
-
 import chromadb
 import ollama
 import streamlit as st
+import time
+from datetime import datetime, timedelta
 from chromadb.utils.embedding_functions.ollama_embedding_function import (
     OllamaEmbeddingFunction,
 )
@@ -12,9 +13,25 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 
+# Page config for comprehensive law firm app
+st.set_page_config(
+    page_title="🏛️ Law Firm RAG System",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Initialize session state for chat and topics
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "chat_topics" not in st.session_state:
+    st.session_state.chat_topics = {}
+if "current_topic" not in st.session_state:
+    st.session_state.current_topic = None
+
 # Add caching for faster repeated queries
 @st.cache_data(ttl=300)  # Cache for 5 minutes
-def cached_query_collection(prompt: str, search_scope: str = "both"):
+def cached_query_collection(prompt: str, search_scope: str = "all"):
     """Cached version of query_collection for faster repeated queries"""
     return query_collection(prompt, search_scope=search_scope)
 
@@ -212,7 +229,7 @@ def get_vector_collection(collection_name: str = "rag_app") -> chromadb.Collecti
     query document embeddings.
 
     Args:
-        collection_name: Name of the collection (e.g., "company_docs" or "temp_docs")
+        collection_name: Name of the collection (e.g., "general_docs", "company_docs", or "temp_docs")
 
     Returns:
         chromadb.Collection: A ChromaDB collection configured with the Ollama embedding
@@ -231,7 +248,7 @@ def get_vector_collection(collection_name: str = "rag_app") -> chromadb.Collecti
     )
 
 
-def add_to_vector_collection(all_splits: list[Document], file_name: str):
+def add_to_vector_collection(all_splits: list[Document], file_name: str, collection_type: str = "temp"):
     """Adds document splits to a vector collection for semantic search.
 
     Takes a list of document splits and adds them to a ChromaDB vector collection
@@ -240,6 +257,7 @@ def add_to_vector_collection(all_splits: list[Document], file_name: str):
     Args:
         all_splits: List of Document objects containing text chunks and metadata
         file_name: String identifier used to generate unique IDs for the chunks
+        collection_type: Which collection to add to ("temp", "general", or "company")
 
     Returns:
         None. Displays a success message via Streamlit when complete.
@@ -252,15 +270,22 @@ def add_to_vector_collection(all_splits: list[Document], file_name: str):
         st.error("No content could be extracted from the uploaded file. Please check if it's a valid PDF with readable text.")
         return
     
-    collection = get_vector_collection("temp_docs")  # Use temp collection for uploads
+    # Map collection types to collection names
+    collection_names = {
+        "temp": "temp_docs",
+        "general": "general_docs", 
+        "company": "company_docs"
+    }
+    
+    collection = get_vector_collection(collection_names[collection_type])
     documents, metadatas, ids = [], [], []
 
     for idx, split in enumerate(all_splits):
         # Check if the split has content
         if split.page_content and split.page_content.strip():
             documents.append(split.page_content)
-            metadatas.append(split.metadata)
-            ids.append(f"{file_name}_{idx}")
+            metadatas.append({**split.metadata, "source_type": collection_type})
+            ids.append(f"{collection_type}_{file_name}_{idx}")
 
     # Check if we have any valid documents to add
     if not documents:
@@ -272,29 +297,130 @@ def add_to_vector_collection(all_splits: list[Document], file_name: str):
         metadatas=metadatas,
         ids=ids,
     )
-    st.success(f"Successfully added {len(documents)} document chunks to the vector store!")
+    st.success(f"Successfully added {len(documents)} document chunks to the {collection_type} collection!")
 
 
 def load_company_documents():
-    """Loads all PDF documents from the data/ folder into the company collection.
+    """Loads all PDF documents from the data/ folders into their respective collections.
     
-    Processes all PDF files in the data/ folder and stores them in a separate
-    company documents collection for permanent access.
+    Processes PDF files from both data/companydocs/ and data/general folder/ and stores them 
+    in separate collections for targeted search capabilities.
     
     Returns:
-        int: Number of documents processed
+        dict: Number of documents processed for each collection and timing info
     """
     import glob
     
+    start_time = time.time()
+    
     data_folder = "data"
     if not os.path.exists(data_folder):
-        return 0
-        
-    pdf_files = glob.glob(os.path.join(data_folder, "*.pdf"))
-    if not pdf_files:
-        return 0
+        return {"general": 0, "company": 0, "load_time": 0}
     
-    collection = get_vector_collection("company_docs")
+    results = {"general": 0, "company": 0}
+    
+    # Load General Legal Knowledge documents
+    general_folder = os.path.join(data_folder, "general folder")
+    if os.path.exists(general_folder):
+        general_files = glob.glob(os.path.join(general_folder, "*.pdf"))
+        if general_files:
+            collection = get_vector_collection("general_docs")
+            
+            # Clear existing general docs
+            existing_docs = collection.get()
+            if existing_docs["documents"]:
+                collection.delete(ids=existing_docs["ids"])
+            
+            total_chunks = 0
+            for pdf_file in general_files:
+                chunks = _process_pdf_file(pdf_file, collection, "general")
+                total_chunks += chunks
+            
+            results["general"] = total_chunks
+    
+    # Load Company Case Files documents  
+    company_folder = os.path.join(data_folder, "companydocs")
+    if os.path.exists(company_folder):
+        company_files = glob.glob(os.path.join(company_folder, "*.pdf"))
+        if company_files:
+            collection = get_vector_collection("company_docs")
+            
+            # Clear existing company docs
+            existing_docs = collection.get()
+            if existing_docs["documents"]:
+                collection.delete(ids=existing_docs["ids"])
+            
+            total_chunks = 0
+            for pdf_file in company_files:
+                chunks = _process_pdf_file(pdf_file, collection, "company")
+                total_chunks += chunks
+            
+            results["company"] = total_chunks
+    
+    # Calculate load time
+    load_time = time.time() - start_time
+    results["load_time"] = load_time
+    
+    return results
+
+
+def _process_pdf_file(pdf_file: str, collection, source_type: str) -> int:
+    """Helper function to process individual PDF files.
+    
+    Args:
+        pdf_file: Path to the PDF file
+        collection: ChromaDB collection to store documents
+        source_type: Type of source ("general" or "company")
+    
+    Returns:
+        int: Number of chunks processed
+    """
+    try:
+        loader = PyMuPDFLoader(pdf_file)
+        docs = loader.load()
+        
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=800,
+            chunk_overlap=100,
+            separators=["\n\n", "\n", ".", "?", "!", " ", ""],
+        )
+        splits = text_splitter.split_documents(docs)
+        
+        # Process in batches to avoid timeout
+        file_name = os.path.basename(pdf_file).replace(".pdf", "").translate(
+            str.maketrans({"-": "", ".": "", " ": "_"})
+        )
+        
+        batch_size = 20
+        for i in range(0, len(splits), batch_size):
+            batch_splits = splits[i:i + batch_size]
+            documents, metadatas, ids = [], [], []
+            
+            for idx, split in enumerate(batch_splits):
+                global_idx = i + idx
+                documents.append(split.page_content)
+                metadatas.append({**split.metadata, "source_type": source_type})
+                ids.append(f"{source_type}_{file_name}_{global_idx}")
+            
+            # Upsert batch with retry logic
+            max_retries = 3
+            for retry in range(max_retries):
+                try:
+                    collection.upsert(documents=documents, metadatas=metadatas, ids=ids)
+                    break
+                except Exception as e:
+                    if retry == max_retries - 1:
+                        st.error(f"Failed to process batch after {max_retries} retries: {str(e)}")
+                        continue
+                    st.warning(f"Batch processing failed, retrying... ({retry + 1}/{max_retries})")
+                    import time
+                    time.sleep(2)
+        
+        return len(splits)
+        
+    except Exception as e:
+        st.error(f"Error processing {pdf_file}: {str(e)}")
+        return 0
     
     # Clear existing company docs
     existing_docs = collection.get()
@@ -353,41 +479,94 @@ def load_company_documents():
     return total_chunks
 
 
-def query_collection(prompt: str, n_results: int = 5, search_scope: str = "both"):
-    """Queries the vector collection with a given prompt to retrieve relevant documents.
+def load_general_documents():
+    """Loads general legal documents from data/general/ folder into the general_docs collection.
+    
+    Returns:
+        dict: Number of document chunks loaded and timing info
+    """
+    start_time = time.time()
+    
+    general_folder = "data/general"
+    if not os.path.exists(general_folder):
+        os.makedirs(general_folder, exist_ok=True)
+        return {"chunks": 0, "load_time": 0}
+    
+    collection = get_vector_collection("general_docs")
+    total_chunks = 0
+    
+    # Process all PDF files in the general folder
+    for file_name in os.listdir(general_folder):
+        if file_name.lower().endswith('.pdf'):
+            pdf_file = os.path.join(general_folder, file_name)
+            chunks_processed = _process_pdf_file(pdf_file, collection, "general")
+            total_chunks += chunks_processed
+    
+    # Calculate load time
+    load_time = time.time() - start_time
+    
+    return {"chunks": total_chunks, "load_time": load_time}
+
+
+def query_collection(prompt: str, n_results: int = 5, search_scope: str = "all"):
+    """Queries the vector collection(s) with a given prompt to retrieve relevant documents.
+    Includes lazy loading for empty collections.
 
     Args:
         prompt: The search query text to find relevant documents.
-        n_results: Maximum number of results to return. Defaults to 15.
-        search_scope: Which collections to search ("company", "temp", or "both").
+        n_results: Maximum number of results to return. Defaults to 5.
+        search_scope: Which collections to search ("general", "company", "temp", "general_company", or "all").
 
     Returns:
-        dict: Query results containing documents, distances and metadata from the collection.
+        dict: Query results containing documents, distances, metadata, and timing information.
+        dict: Query results containing documents, distances and metadata from the collection(s).
 
     Raises:
         ChromaDBError: If there are issues querying the collection.
     """
-    results = {"documents": [[]], "distances": [[]], "metadatas": [[]]}
+    query_start_time = time.time()
+    results = {"documents": [[]], "distances": [[]], "metadatas": [[]], "loading_times": {}}
     
-    if search_scope in ["company", "both"]:
+    # Search General Legal Knowledge
+    if search_scope == "general":
+        general_collection = get_vector_collection("general_docs")
+        try:
+            # Check if collection is empty and load on-demand
+            general_docs = general_collection.get()
+            if not general_docs["documents"]:
+                st.info("🔄 Loading general legal knowledge for your query...")
+                general_result = load_general_documents()
+                if general_result["chunks"] > 0:
+                    st.success(f"✅ Loaded {general_result['chunks']} general legal chunks in {general_result['load_time']:.2f}s")
+                    results["loading_times"]["general"] = general_result['load_time']
+                
+            general_results = general_collection.query(query_texts=[prompt], n_results=n_results)
+            results["documents"][0].extend(general_results["documents"][0])
+            results["distances"][0].extend(general_results["distances"][0])
+            results["metadatas"][0].extend(general_results["metadatas"][0])
+        except Exception:
+            pass  # General collection might be empty
+    
+    # Search Company Case Files
+    if search_scope == "company":
         company_collection = get_vector_collection("company_docs")
         try:
+            # Check if collection is empty and load on-demand
+            company_docs = company_collection.get()
+            if not company_docs["documents"]:
+                st.info("🔄 Loading company documents for your query...")
+                company_result = load_company_documents()
+                total_chunks = company_result.get("general", 0) + company_result.get("company", 0)
+                if total_chunks > 0:
+                    st.success(f"✅ Loaded {total_chunks} company document chunks in {company_result['load_time']:.2f}s")
+                    results["loading_times"]["company"] = company_result['load_time']
+            
             company_results = company_collection.query(query_texts=[prompt], n_results=n_results)
             results["documents"][0].extend(company_results["documents"][0])
             results["distances"][0].extend(company_results["distances"][0])
             results["metadatas"][0].extend(company_results["metadatas"][0])
         except Exception:
             pass  # Company collection might be empty
-    
-    if search_scope in ["temp", "both"]:
-        temp_collection = get_vector_collection("temp_docs")
-        try:
-            temp_results = temp_collection.query(query_texts=[prompt], n_results=n_results)
-            results["documents"][0].extend(temp_results["documents"][0])
-            results["distances"][0].extend(temp_results["distances"][0])
-            results["metadatas"][0].extend(temp_results["metadatas"][0])
-        except Exception:
-            pass  # Temp collection might be empty
     
     # Sort by distance (lower is better)
     if results["documents"][0]:
@@ -400,6 +579,10 @@ def query_collection(prompt: str, n_results: int = 5, search_scope: str = "both"
         results["documents"][0] = [x[0] for x in combined]
         results["distances"][0] = [x[1] for x in combined]
         results["metadatas"][0] = [x[2] for x in combined]
+    
+    # Add total query time
+    total_query_time = time.time() - query_start_time
+    results["query_time"] = total_query_time
     
     return results
 
@@ -508,29 +691,60 @@ def re_rank_documents(documents: list[str], prompt: str) -> tuple[str, list[int]
     return relevant_text, relevant_text_ids
 
 
+def check_collections_ready():
+    """Check if collections already have preprocessed documents"""
+    try:
+        general_collection = get_vector_collection("general_docs")
+        company_collection = get_vector_collection("company_docs")
+        
+        general_docs = general_collection.get()
+        company_docs = company_collection.get()
+        
+        general_count = len(general_docs["documents"]) if general_docs["documents"] else 0
+        company_count = len(company_docs["documents"]) if company_docs["documents"] else 0
+        
+        return general_count, company_count
+    except:
+        return 0, 0
+
 if __name__ == "__main__":
     st.set_page_config(page_title="RAG Question Answer", layout="wide")
     
-    # Initialize company documents on startup with error handling
-    if "company_docs_loaded" not in st.session_state:
-        try:
-            with st.spinner("Loading company documents..."):
-                chunks = load_company_documents()
-                st.session_state.company_docs_loaded = True
-                if chunks > 0:
-                    st.success(f"Loaded {chunks} chunks from company documents in data/ folder")
-                else:
-                    st.info("No PDF files found in data/ folder")
-        except Exception as e:
-            st.error(f"Error loading company documents: {str(e)}")
-            st.warning("Continuing without company documents. You can still upload temporary files.")
-            st.session_state.company_docs_loaded = True  # Mark as loaded to avoid retrying
+    # Smart startup: Check if documents are already preprocessed
+    if "collections_checked" not in st.session_state:
+        general_count, company_count = check_collections_ready()
+        
+        if general_count > 0 or company_count > 0:
+            st.success(f"⚡ INSTANT STARTUP! Documents already preprocessed:")
+            if general_count > 0:
+                st.info(f"📚 General Legal Knowledge: {general_count} chunks ready")
+            if company_count > 0:
+                st.info(f"🏢 Company Documents: {company_count} chunks ready")
+        else:
+            st.warning("📋 No preprocessed documents found")
+            st.info("🚀 For instant startup, run: `python preprocessing_script.py`")
+            st.info("📁 Or add PDFs to data/ folders and click reload buttons below")
+        
+        st.session_state.collections_checked = True
+        st.session_state.company_docs_loaded = True  # Skip slow loading
     
     # Two column layout
     col1, col2 = st.columns([1, 2])
     
     with col1:
         st.header("📚 Document Sources")
+        
+        # General Legal Knowledge Status
+        st.subheader("📚 General Legal Knowledge")
+        general_collection = get_vector_collection("general_docs")
+        general_docs = general_collection.get()
+        general_count = len(general_docs["documents"]) if general_docs["documents"] else 0
+        st.info(f"General docs: {general_count} chunks loaded")
+        
+        if st.button("📖 Load General Docs"):
+            chunks = load_general_documents()
+            st.success(f"Loaded {chunks} chunks from data/general/ folder")
+            st.rerun()
         
         # Company Documents Status
         st.subheader("🏢 Company Knowledge Base")
@@ -566,17 +780,6 @@ if __name__ == "__main__":
                     add_to_vector_collection(all_splits, normalize_uploaded_file_name)
                     st.session_state[f"processed_{uploaded_file.name}"] = True
                     st.rerun()  # Refresh to show updated counts
-        
-        # Show temp documents status
-        temp_collection = get_vector_collection("temp_docs")
-        temp_docs = temp_collection.get()
-        temp_count = len(temp_docs["documents"]) if temp_docs["documents"] else 0
-        st.info(f"Temporary documents: {temp_count} chunks")
-        
-        if temp_count > 0 and st.button("🗑 Clear Temp Docs"):
-            temp_collection.delete(ids=temp_docs["ids"])
-            st.success("Cleared temporary documents")
-            st.rerun()
     
     with col2:
         # Question and Answer Area
@@ -585,11 +788,10 @@ if __name__ == "__main__":
         # Search scope selection
         search_scope = st.selectbox(
             "Search in:",
-            ["both", "company", "temp"],
+            ["general", "company"],
             format_func=lambda x: {
-                "both": "🔍 Both Company & Temporary Docs",
-                "company": "🏢 Company Documents Only", 
-                "temp": "📑 Temporary Documents Only"
+                "general": "📚 General Legal Knowledge",
+                "company": "🏢 Company Documents"
             }[x]
         )
         
@@ -647,3 +849,21 @@ if __name__ == "__main__":
                 relevant_text, relevant_text_ids = re_rank_documents(context, prompt)
                 response = call_llm(context=relevant_text, prompt=prompt)
                 st.write_stream(response)
+                
+                # Document analytics footer
+                with st.expander("📊 Query Analytics", expanded=False):
+                    st.write(f"**Search Scope:** {search_scope}")
+                    st.write(f"**Chunks Retrieved:** {len(context)}")
+                    st.write(f"**Relevant Context:** {len(relevant_text)} characters")
+                    
+                    # Show source distribution
+                    if results.get("metadatas") and results["metadatas"][0]:
+                        sources = {}
+                        for metadata in results["metadatas"][0]:
+                            source_type = metadata.get("source_type", "unknown")
+                            sources[source_type] = sources.get(source_type, 0) + 1
+                        
+                        st.write("**Source Distribution:**")
+                        for source_type, count in sources.items():
+                            emoji = {"general": "📚", "company": "🏢", "temp": "📑"}.get(source_type, "📄")
+                            st.write(f"{emoji} {source_type.title()}: {count} chunks")
